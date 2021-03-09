@@ -1,20 +1,12 @@
 ####################################################################################
 # PALO ALTO list all Global Protect Users
-# This script lists the active & previous GlobalProtect Users for each device & gateway
 #
 # Gemaakt door: Sebastian van Dijk
 # Gemaakt op: 27-11-2018
-# Changelog:
-#               - 23-05-2018        SvD: Previous users, menu en count toegevoegd
-#               - 24-05-2018        SvD: Disconnect users & ticketing toegevoegd / code cleanup
-#               - 05-01-2021 v1.2   SvD:    - All calls use Panorama
-#                                           - Changed Panorama Address to Parameter
-#                                           - HA removed
-#                                           - Ticket procedure changed by using the serial nr
 #
-# Actionlist: 
-#               - Cleanup Code
-#               - Check API faultcode array
+# This script lists the active & previous GlobalProtect Users for each device & gateway, it is aware of HA status
+#
+# Actionlist: Cleanup Code
 # 
 ####################################################################################
 
@@ -22,53 +14,25 @@
 
 clear-host 
 
-####################################################################################
-# SETTINGS
-####################################################################################
-#region settings
-
-#below code ignores untrusted certificate
-####################################################################################
-add-type @"
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
-public class TrustAllCertsPolicy : ICertificatePolicy {
-public bool CheckValidationResult(
-ServicePoint srvPoint, X509Certificate certificate,
-WebRequest request, int certificateProblem) {
-return true;
-}
-}
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-####################################################################################
-
-# SET TLS version
-####################################################################################
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-####################################################################################
-
-
-#endregion
-
-####################################################################################
-# VARIABLES
-####################################################################################
-#region variables
+#region variables and settings
 
 # Import variables
-$Panorama = "Add your Panorama Address HERE"
-$domainsuffix = "Add the domain suffix for the found Palo Alto firewalls here"
-
+####################################################################################
 # API Key PAN_API user
 $key = $PaloAlto_api_key  #ENTER YOUR API KEY HERE
+
 if (!$key) {
     write-host "No API key" -foregroundcolor red
     exit
 }
+####################################################################################
+
 
 # Get the Date
+####################################################################################
 $date = Get-Date
+####################################################################################
+
 
 # Faultcode array 
 # Source: https://www.paloaltonetworks.com/documentation/71/pan-os/xml-api/pan-os-xml-api-error-codes
@@ -113,7 +77,29 @@ $redX = @{
     ForegroundColor = 'Red'
     NoNewLine       = $true
 }
+####################################################################################
 
+
+#below code ignores untrusted certificate
+####################################################################################
+add-type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy : ICertificatePolicy {
+public bool CheckValidationResult(
+ServicePoint srvPoint, X509Certificate certificate,
+WebRequest request, int certificateProblem) {
+return true;
+}
+}
+"@
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+####################################################################################
+
+# SET TLS version
+####################################################################################
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+####################################################################################
 
 # Create Object Classes
 ####################################################################################
@@ -274,22 +260,19 @@ Class ConnectedPortalUser {
 
 Class DevicePortal {
     [string]$name
-    [string]$firewall
-    [string]$serial
+    [string]$firewall  
     
     DevicePortal (  [string]$name , `
-            [string]$firewall , `
-            [string]$serial ) {
+            [string]$firewall ) {
     
         $this.name = $name
         $this.firewall = $firewall  
-        $this.serial = $serial
         
     }
 
 }
 
-
+####################################################################################
 
 # Create Variables
 ####################################################################################
@@ -298,14 +281,10 @@ $PreviousGatewayUsers = New-Object "System.Collections.Generic.List[PreviousGate
 $ConnectedPortalUsers = New-Object "System.Collections.Generic.List[ConnectedPortalUser]" 
 $DevicePortals = New-Object "System.Collections.Generic.List[DevicePortal]" 
 $gpportals
-
-
+####################################################################################
 
 #endregion
 
-####################################################################################
-# FUNCTIONS
-####################################################################################
 #region Functions
 # Define function to match faultcodes to the returned faultcode and prints faultcode when not Success
 function check_faults ($code) {
@@ -409,9 +388,9 @@ function do_webrequest ($inputuri) {
     }
     catch {
         #$error = $_.Exception.Response
-        $errorcode = $_.Exception.Response.StatusCode.value__
-        write-host "!!!!!!!!! HTTP Exception Error :"$errorcode "!!!!!!!!!" -ForegroundColor Red
-        check_faults $errorcode
+        $error = $_.Exception.Response.StatusCode.value__
+        write-host "!!!!!!!!! HTTP Exception Error :"$error "!!!!!!!!!" -ForegroundColor Red
+        check_faults $error
     }
     
     return $locResult
@@ -433,7 +412,7 @@ Function gateway_logout ($query) {
 }
 function refresh_devices {
     # list connected devices
-    $inputuri = "https://$($Panorama)/api/?key=$($key)&type=op&cmd=<show><devices><connected></connected></devices></show>"
+    $inputuri = "https://panorama.address.local/api/?key=$($key)&type=op&cmd=<show><devices><connected></connected></devices></show>"
     $webresult = do_webrequest ($inputuri)
     $devices = $webresult.response.result.devices
     return $devices
@@ -442,7 +421,7 @@ function refresh_devices {
 function refresh_info() {
     
     $devices = refresh_devices
-    
+
     $TotalCount = @{} 
     $TotalCount.connectedgateway = 0
     $TotalCount.connectedportal = 0
@@ -455,38 +434,34 @@ function refresh_info() {
 
     foreach ($device in $devices.entry) {
         
-        $device.hostname += $domainsuffix
-
         write-host `n"Hostname: " -NoNewline 
         write-host $device.hostname `t -nonewline -ForegroundColor Green 
         write-host "Serial: " $device.serial 
-        
-        #write-host "Operational Mode: " -nonewline 
-        #write-host $device.'operational-mode' `t -ForegroundColor Green -nonewline
-                
-        # }
-        if ($device.'operational-mode' -ne "normal") {
-            write-host "Operational Mode: " -NoNewline
-            write-host $device.'operational-mode' `t -ForegroundColor Yellow 
+        if ($device.'operational-mode' -eq "normal") {
+            write-host "Operational Mode: " -nonewline 
+            write-host $device.'operational-mode' `t -ForegroundColor Green -nonewline
                 
         }
-        if ($device.'operational-mode' -eq "normal") {
-            # Only get other config on active device
+        if ($device.'operational-mode' -ne "normal") {
             write-host "Operational Mode: " -NoNewline
-            write-host $device.'operational-mode' `t -ForegroundColor Green 
+            write-host $device.'operational-mode' `t -ForegroundColor Yellow -NoNewline
+                
+        }
+        if ($device.ha.state -eq "active") {
+            # Only get other config on active device
+            write-host "HA State: " -nonewline
+            write-host $device.ha.state -ForegroundColor Green
             
             
             # List Gateways
-            #$gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><gateway></gateway></global-protect-gateway></show>&key=$($key)"
-            $gp_uri = "https://$($panorama)/api/?type=op&cmd=<show><global-protect-gateway><gateway></gateway></global-protect-gateway></show>&key=$($key)&target=$($device.serial)"
+            $gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><gateway></gateway></global-protect-gateway></show>&key=$($key)"
             $gpresult = do_webrequest ($gp_uri)
             foreach ($gpgateway in $gpresult.response.result.entry) {
                 write-host "Gateway: " $gpgateway.'gateway-name'    
                 
                 
                 # List connected Users in Gateway 
-                #$gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><current-user><gateway>$($gpgateway.'gateway-name')</gateway></current-user></global-protect-gateway></show>&key=$($key)"
-                $gp_uri = "https://$($panorama)/api/?type=op&cmd=<show><global-protect-gateway><current-user><gateway>$($gpgateway.'gateway-name')</gateway></current-user></global-protect-gateway></show>&key=$($key)&target=$($device.serial)"
+                $gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><current-user><gateway>$($gpgateway.'gateway-name')</gateway></current-user></global-protect-gateway></show>&key=$($key)"
                 $gpresult = do_webrequest ($gp_uri)
                 
                 write-host `t "Active Gateway Users: " -nonewline
@@ -515,8 +490,7 @@ function refresh_info() {
                 }
     
                 # List previous Users in Gateway 
-                #$gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><previous-user><gateway>$($gpgateway.'gateway-name')</gateway></previous-user></global-protect-gateway></show>&key=$($key)"
-                $gp_uri = "https://$($panorama)/api/?type=op&cmd=<show><global-protect-gateway><previous-user><gateway>$($gpgateway.'gateway-name')</gateway></previous-user></global-protect-gateway></show>&key=$($key)&target=$($device.serial)"
+                $gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-gateway><previous-user><gateway>$($gpgateway.'gateway-name')</gateway></previous-user></global-protect-gateway></show>&key=$($key)"
                 $gpresult = do_webrequest ($gp_uri)
                 
                 write-host `t "Previous Gateway Users: " -nonewline
@@ -546,31 +520,26 @@ function refresh_info() {
     
     
             # List Portals
-            #$gp_uri = "https://$($device.hostname)/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/global-protect/global-protect-portal&key=$($key)"
-            $gp_uri = "https://$($panorama)/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/global-protect/global-protect-portal&key=$($key)&target=$($device.serial)"
+            $gp_uri = "https://$($device.hostname)/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/global-protect/global-protect-portal&key=$($key)"
             $gpresult = do_webrequest ($gp_uri)  
             foreach ($gpportal in $gpresult.response.result.'global-protect-portal'.entry) {
-                Write-Host "GP Portal: " -nonewline
-                write-host $gpportal.name
+                Write-Host "GP Portal: "$gpportal.name
             
-                #$DevicePortals.Add([DevicePortal]::new($gpportal.name , `
-                #            $device.hostname , $device.serial  ))
                 $DevicePortals.Add([DevicePortal]::new($gpportal.name , `
-                            $device.hostname , `
-                            $device.serial  ))
+                            $device.hostname    ))
+            
             
             }
              
-            $deviceportals | Sort-Object
+
 
 
                 
                 
     
             # List Portal Users
-            #$gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-portal><current-user></current-user></global-protect-portal></show>&key=$($key)"
-            $gp_uri = "https://$($panorama)/api/?type=op&cmd=<show><global-protect-portal><current-user></current-user></global-protect-portal></show>&key=$($key)&target=$($device.serial)"
-
+            $gp_uri = "https://$($device.hostname)/api/?type=op&cmd=<show><global-protect-portal><current-user></current-user></global-protect-portal></show>&key=$($key)"
+                                                                    
             $gpresult = do_webrequest ($gp_uri)
             write-host `t "Active Portal Users: " -nonewline 
             write-host $gpresult.response.result.'gp-portal-users'.ChildNodes.count -ForegroundColor Blue
@@ -594,9 +563,9 @@ function refresh_info() {
     
             
         }
-        if ($device.'operational-mode' -ne "normal") {
-            write-host "Device mode: " -nonewline
-            write-host $device.'operational-mode' -ForegroundColor Red
+        if ($device.ha.state -ne "active") {
+            write-host "HA State: " -nonewline
+            write-host $device.ha.state -ForegroundColor Red
         }
     
     }
@@ -610,7 +579,7 @@ function refresh_info() {
 function DisplayConnectedGatewayUsers() {    
     # LIST CONNECTED GATEWAY USERS
     Write-host `n"Gateway connected users:" -ForegroundColor Yellow
-    $ConnectedGatewayUsers | sort-object username | Format-Table -Property username, computer, virtual_ip, public_ip, tunnel_type, login_time, gateway, portal, client
+    $ConnectedGatewayUsers | sort-object username | Format-Table -Property username,computer,virtual_ip,public_ip,tunnel_type,login_time,gateway,portal,client
     <#foreach ($connecteduser in $ConnectedGatewayUsers) {
             
             write-host  $connecteduser.username `t `t `t `t `
@@ -640,7 +609,7 @@ function DisplayConnectedPortalUsers() {
 function DisplayPreviousGatewayUsers() {  
     # LIST PREVIOUS GATEWAY USERS
     Write-host `n"Gateway previous users:" -ForegroundColor Yellow
-    $PreviousGatewayUsers | sort-object username | Format-Table -Property username, computer, virtual_ip, public_ip, tunnel_type, login_time, gateway, portal, client
+    $PreviousGatewayUsers | sort-object username | Format-Table -Property username,computer,virtual_ip,public_ip,tunnel_type,login_time,gateway,portal,client
     <#foreach ($PreviousGatewayUser in $PreviousGatewayUsers) {
             write-host  $PreviousGatewayUser.username `t `t `t `t `
                 $PreviousGatewayUser.firewall `t `
@@ -680,8 +649,8 @@ function request_ticket() {
 
     
     
-    #$gp_uri = "https://$($firewall)/api/?type=op&cmd=<request><global-protect-portal><ticket><portal>$($portal)</portal><duration>$($duration)</duration><request>$($request_id)</request></ticket></global-protect-portal></request>&key=$($key)"
-    $gp_uri = "https://$($panorama)/api/?type=op&cmd=<request><global-protect-portal><ticket><portal>$($portal)</portal><duration>$($duration)</duration><request>$($request_id)</request></ticket></global-protect-portal></request>&key=$($key)&target=$($device.serial)"
+    $gp_uri = "https://$($firewall)/api/?type=op&cmd=<request><global-protect-portal><ticket><portal>$($portal)</portal><duration>$($duration)</duration><request>$($request_id)</request></ticket></global-protect-portal></request>&key=$($key)"
+    
     $gpresult = do_webrequest ($gp_uri)  
     check_faults_v2 -status $gpresult.response.status 
     
@@ -697,19 +666,24 @@ function request_ticket() {
 #endregion
 
 
-
+# import modules
 
 
 ####################################################################################
 # START ACTUAL SCRIPT
 ####################################################################################
-#region script initiation
 
 #get api key 
 # curl -k -X GET 'https://<firewall>/api/?type=keygen&user=<username>&password=<password>'
 # $apikeyrequest=Invoke-WebRequest -Method Get 'https://panorama.address.local/api/?type=keygen&user=********&password=*******'
 
+
+
 write-host "Date: "$date
+
+
+
+
 
 $total = refresh_info
 
@@ -733,8 +707,8 @@ do {
     write-host ""
     write-host "-------------------------------------------------------------------"
 
-    $inputkey = Read-Host "Please make a selection"
-    switch ($inputkey) {
+    $input = Read-Host "Please make a selection"
+    switch ($input) {
         '1' {
             # 1. Show Connected Gateway Users
             DisplayConnectedGatewayUsers
@@ -774,27 +748,25 @@ do {
             # 6. Request Ticket
             write-host "Portals: "
             foreach ($DevicePortal in $DevicePortals) {
-                write-host $DevicePortal.firewall ":" -NoNewline
-                write-host $DevicePortal.name $deviceportal.serial -ForegroundColor Blue
+                write-host $DevicePortal.name -ForegroundColor Blue
             }
-            $firewallname = Read-Host -Prompt "Enter Firewall name"
+            $userportal = Read-Host -Prompt "Enter User Portal"
             $duration = read-host -prompt "Enter duration in Minutes"
             $request_id = Read-Host -Prompt "Enter Request in format 1111-1111"
-            #foreach ($DevicePortal in $DevicePortals) {
-            if ($firewallname -eq $DevicePortal.name) {
-                write-host "Requesting ticket...." -NoNewline
-                request_ticket -firewall $DevicePortal.serial -portal $userportal -duration $duration -request_id $request_id
+            foreach ($DevicePortal in $DevicePortals) {
+                if ($userportal -eq $DevicePortal.name) {
+                    write-host "Requesting ticket...." -NoNewline
+                    request_ticket -firewall $DevicePortal.firewall -portal $userportal -duration $duration -request_id $request_id
 
+                }
             }
-            #}
             
 
         }    
     }
 }
-until ($inputkey -eq 'q')
+until ($input -eq 'q')
 
-#endregion
 
 
 
